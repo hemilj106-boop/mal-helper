@@ -1,0 +1,131 @@
+openapi: 3.1.0
+info:
+  title: MAL Helper
+  version: 1.0.0
+  description: Manage the owner's MyAnimeList anime list.
+servers:
+  - url: https://YOUR-DEPLOYED-DOMAIN.example.com
+paths:
+  /anime/search:
+    get:
+      operationId: searchAnime
+      summary: Search MyAnimeList for anime by title.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Search results.
+  /anime/{anime_id}:
+    get:
+      operationId: getAnime
+      summary: Get anime details and the owner's current list status when available.
+      parameters:
+        - name: anime_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Anime details.
+  /anime/{anime_id}/list:
+    put:
+      operationId: updateAnimeList
+      summary: Add an anime to the owner's list or update its status, score, or progress.
+      parameters:
+        - name: anime_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [watching, completed, on_hold, dropped, plan_to_watch]
+                score:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                num_watched_episodes:
+                  type: integer
+                  minimum: 0
+                is_rewatching:
+                  type: boolean
+                priority:
+                  type: integer
+                  minimum: 0
+                  maximum: 2
+                num_times_rewatched:
+                  type: integer
+                  minimum: 0
+                rewatch_value:
+                  type: integer
+                  minimum: 0
+                  maximum: 5
+                tags:
+                  type: string
+                comments:
+                  type: string
+      responses:
+        "200":
+          description: Updated list status.
+    delete:
+      operationId: removeAnimeFromList
+      summary: Remove an anime from the owner's MyAnimeList.
+      parameters:
+        - name: anime_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Anime removed.
+  /me/anime-list:
+    get:
+      operationId: getMyAnimeList
+      summary: Read the owner's MyAnimeList entries.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [watching, completed, on_hold, dropped, plan_to_watch]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+      responses:
+        "200":
+          description: Anime list entries.
+components:
+  securitySchemes:
+    helperApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+security:
+  - helperApiKey: []
