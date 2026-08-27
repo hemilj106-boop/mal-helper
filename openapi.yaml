@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MAL Helper
-  version: 1.0.1
+  version: 1.0.2
   description: Manage the owner's MyAnimeList anime list.
 servers:
   - url: https://mal-helper.onrender.com
@@ -122,7 +122,10 @@ paths:
         "200":
           description: Anime list entries.
 components:
-  schemas: {}
+  schemas:
+    GenericObject:
+      type: object
+      additionalProperties: true
   securitySchemes:
     helperApiKey:
       type: apiKey
