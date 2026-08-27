@@ -1,11 +1,19 @@
 openapi: 3.1.0
 info:
   title: MAL Helper
-  version: 1.0.3
+  version: 1.0.4
   description: Manage the owner's MyAnimeList anime list.
 servers:
   - url: https://himel106j-mal-sync.onrender.com
 paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Check whether the MAL Helper API is reachable.
+      security: []
+      responses:
+        "200":
+          description: Service health status.
   /anime/search:
     get:
       operationId: searchAnime
