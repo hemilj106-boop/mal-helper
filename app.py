@@ -3,17 +3,18 @@ import secrets
 import sqlite3
 import time
 from typing import Optional
+from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header, Query
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-MAL_CLIENT_ID = os.getenv("MAL_CLIENT_ID", "")
-MAL_CLIENT_SECRET = os.getenv("MAL_CLIENT_SECRET", "")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
-HELPER_API_KEY = os.getenv("HELPER_API_KEY", "")
-TOKEN_DB_PATH = os.getenv("TOKEN_DB_PATH", "tokens.db")
+MAL_CLIENT_ID = os.getenv("MAL_CLIENT_ID", "").strip()
+MAL_CLIENT_SECRET = os.getenv("MAL_CLIENT_SECRET", "").strip()
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+HELPER_API_KEY = os.getenv("HELPER_API_KEY", "").strip()
+TOKEN_DB_PATH = os.getenv("TOKEN_DB_PATH", "tokens.db").strip() or "tokens.db"
 
 MAL_AUTH_URL = "https://myanimelist.net/v1/oauth2/authorize"
 MAL_TOKEN_URL = "https://myanimelist.net/v1/oauth2/token"
@@ -21,8 +22,8 @@ MAL_API_BASE = "https://api.myanimelist.net/v2"
 
 app = FastAPI(
     title="MAL Helper",
-    version="1.0.0",
-    description="Personal MyAnimeList helper API for a Custom GPT."
+    version="1.0.1",
+    description="Personal MyAnimeList helper API for a Custom GPT.",
 )
 
 
@@ -34,21 +35,25 @@ def db():
 
 def init_db():
     with db() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS oauth_state (
                 state TEXT PRIMARY KEY,
                 verifier TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             )
-        """)
-        conn.execute("""
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS mal_token (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 access_token TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
                 expires_at INTEGER NOT NULL
             )
-        """)
+            """
+        )
         conn.commit()
 
 
@@ -79,8 +84,9 @@ def check_api_key(x_api_key: Optional[str]):
 
 
 def make_pkce_verifier() -> str:
-    # 96 random bytes -> 128 URL-safe characters, suitable for MAL PKCE.
-    return secrets.token_urlsafe(96)[:128]
+    # MAL currently supports PKCE using the plain method.
+    # 64 random bytes produces an RFC 7636-safe URL token well within MAL's 43-128 char limit.
+    return secrets.token_urlsafe(64)
 
 
 def save_token(payload: dict):
@@ -89,14 +95,17 @@ def save_token(payload: dict):
     expires_in = int(payload.get("expires_in", 3600))
     expires_at = int(time.time()) + expires_in - 60
     with db() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO mal_token (id, access_token, refresh_token, expires_at)
             VALUES (1, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 access_token=excluded.access_token,
                 refresh_token=excluded.refresh_token,
                 expires_at=excluded.expires_at
-        """, (access_token, refresh_token, expires_at))
+            """,
+            (access_token, refresh_token, expires_at),
+        )
         conn.commit()
 
 
@@ -126,7 +135,6 @@ async def get_access_token() -> str:
         raise HTTPException(resp.status_code, f"Could not refresh MAL token: {resp.text}")
 
     payload = resp.json()
-    # Some OAuth servers may omit a new refresh token. Keep the old one if so.
     payload["refresh_token"] = payload.get("refresh_token") or row["refresh_token"]
     save_token(payload)
     return payload["access_token"]
@@ -153,7 +161,7 @@ async def mal_request(method: str, path: str, *, params=None, data=None):
 class ListUpdate(BaseModel):
     status: Optional[str] = Field(
         default=None,
-        description="watching, completed, on_hold, dropped, or plan_to_watch"
+        description="watching, completed, on_hold, dropped, or plan_to_watch",
     )
     score: Optional[int] = Field(default=None, ge=0, le=10)
     num_watched_episodes: Optional[int] = Field(default=None, ge=0)
@@ -198,11 +206,10 @@ def auth_start():
     state = secrets.token_urlsafe(32)
 
     with db() as conn:
-        # Clean stale states older than 20 minutes.
         conn.execute("DELETE FROM oauth_state WHERE created_at < ?", (int(time.time()) - 1200,))
         conn.execute(
             "INSERT INTO oauth_state (state, verifier, created_at) VALUES (?, ?, ?)",
-            (state, verifier, int(time.time()))
+            (state, verifier, int(time.time())),
         )
         conn.commit()
 
@@ -210,11 +217,11 @@ def auth_start():
     params = {
         "response_type": "code",
         "client_id": MAL_CLIENT_ID,
-        "code_challenge": verifier,
         "state": state,
         "redirect_uri": callback,
+        "code_challenge": verifier,
+        "code_challenge_method": "plain",
     }
-    from urllib.parse import urlencode
     return RedirectResponse(f"{MAL_AUTH_URL}?{urlencode(params)}")
 
 
@@ -224,7 +231,7 @@ async def auth_callback(code: str = Query(...), state: str = Query(...)):
     with db() as conn:
         row = conn.execute(
             "SELECT verifier FROM oauth_state WHERE state = ?",
-            (state,)
+            (state,),
         ).fetchone()
         conn.execute("DELETE FROM oauth_state WHERE state = ?", (state,))
         conn.commit()
@@ -264,7 +271,7 @@ async def search_anime(
     x_api_key: Optional[str] = Header(default=None),
 ):
     check_api_key(x_api_key)
-    result = await mal_request(
+    return await mal_request(
         "GET",
         "/anime",
         params={
@@ -273,7 +280,6 @@ async def search_anime(
             "fields": "id,title,alternative_titles,main_picture,start_date,end_date,media_type,status,num_episodes",
         },
     )
-    return result
 
 
 @app.get("/anime/{anime_id}")
@@ -314,10 +320,7 @@ async def delete_from_list(
     x_api_key: Optional[str] = Header(default=None),
 ):
     check_api_key(x_api_key)
-    return await mal_request(
-        "DELETE",
-        f"/anime/{anime_id}/my_list_status",
-    )
+    return await mal_request("DELETE", f"/anime/{anime_id}/my_list_status")
 
 
 @app.get("/me/anime-list")
