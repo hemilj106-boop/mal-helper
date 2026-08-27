@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: Manage the owner's MyAnimeList anime list.
 servers:
-  - url: https://YOUR-DEPLOYED-DOMAIN.example.com
+  - url: https://mal-helper.onrender.com
 paths:
   /anime/search:
     get:
