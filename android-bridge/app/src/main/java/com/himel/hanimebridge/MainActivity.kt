@@ -267,7 +267,6 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if (::webView.isInitialized) {
             webView.stopLoading()
-            webView.webViewClient = null
             webView.destroy()
         }
         CookieManager.getInstance().flush()
