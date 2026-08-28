@@ -1,20 +1,21 @@
 import os
 import secrets
-import sqlite3
 import time
 from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
+import psycopg
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
+from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 MAL_CLIENT_ID = os.getenv("MAL_CLIENT_ID", "").strip()
 MAL_CLIENT_SECRET = os.getenv("MAL_CLIENT_SECRET", "").strip()
 APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
 HELPER_API_KEY = os.getenv("HELPER_API_KEY", "").strip()
-TOKEN_DB_PATH = os.getenv("TOKEN_DB_PATH", "tokens.db").strip() or "tokens.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 MAL_AUTH_URL = "https://myanimelist.net/v1/oauth2/authorize"
 MAL_TOKEN_URL = "https://myanimelist.net/v1/oauth2/token"
@@ -22,15 +23,15 @@ MAL_API_BASE = "https://api.myanimelist.net/v2"
 
 app = FastAPI(
     title="MAL Helper",
-    version="1.0.1",
+    version="1.1.0",
     description="Personal MyAnimeList helper API for a Custom GPT.",
 )
 
 
 def db():
-    conn = sqlite3.connect(TOKEN_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
 def init_db():
@@ -40,7 +41,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS oauth_state (
                 state TEXT PRIMARY KEY,
                 verifier TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at BIGINT NOT NULL
             )
             """
         )
@@ -50,7 +51,7 @@ def init_db():
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 access_token TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
-                expires_at INTEGER NOT NULL
+                expires_at BIGINT NOT NULL
             )
             """
         )
@@ -72,6 +73,8 @@ def require_env():
         missing.append("APP_BASE_URL")
     if not HELPER_API_KEY:
         missing.append("HELPER_API_KEY")
+    if not DATABASE_URL:
+        missing.append("DATABASE_URL")
     if missing:
         raise HTTPException(500, f"Missing environment variables: {', '.join(missing)}")
 
@@ -84,8 +87,6 @@ def check_api_key(x_api_key: Optional[str]):
 
 
 def make_pkce_verifier() -> str:
-    # MAL currently supports PKCE using the plain method.
-    # 64 random bytes produces an RFC 7636-safe URL token well within MAL's 43-128 char limit.
     return secrets.token_urlsafe(64)
 
 
@@ -98,7 +99,7 @@ def save_token(payload: dict):
         conn.execute(
             """
             INSERT INTO mal_token (id, access_token, refresh_token, expires_at)
-            VALUES (1, ?, ?, ?)
+            VALUES (1, %s, %s, %s)
             ON CONFLICT(id) DO UPDATE SET
                 access_token=excluded.access_token,
                 refresh_token=excluded.refresh_token,
@@ -179,6 +180,7 @@ def root():
         "name": "MAL Helper",
         "status": "running",
         "authorized": get_saved_token() is not None,
+        "storage": "neon-postgres",
     }
 
 
@@ -194,7 +196,7 @@ def privacy():
     <h1>MAL Helper Privacy Policy</h1>
     <p>This is a private personal helper. It stores MyAnimeList OAuth tokens only
     so the owner can manage their own anime list. It does not sell or share data.</p>
-    <p>Do not publish your MAL client secret, helper API key, or OAuth tokens.</p>
+    <p>Do not publish your MAL client secret, helper API key, database URL, or OAuth tokens.</p>
     </body></html>
     """
 
@@ -206,9 +208,9 @@ def auth_start():
     state = secrets.token_urlsafe(32)
 
     with db() as conn:
-        conn.execute("DELETE FROM oauth_state WHERE created_at < ?", (int(time.time()) - 1200,))
+        conn.execute("DELETE FROM oauth_state WHERE created_at < %s", (int(time.time()) - 1200,))
         conn.execute(
-            "INSERT INTO oauth_state (state, verifier, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO oauth_state (state, verifier, created_at) VALUES (%s, %s, %s)",
             (state, verifier, int(time.time())),
         )
         conn.commit()
@@ -230,10 +232,10 @@ async def auth_callback(code: str = Query(...), state: str = Query(...)):
     require_env()
     with db() as conn:
         row = conn.execute(
-            "SELECT verifier FROM oauth_state WHERE state = ?",
+            "SELECT verifier FROM oauth_state WHERE state = %s",
             (state,),
         ).fetchone()
-        conn.execute("DELETE FROM oauth_state WHERE state = ?", (state,))
+        conn.execute("DELETE FROM oauth_state WHERE state = %s", (state,))
         conn.commit()
 
     if not row:
