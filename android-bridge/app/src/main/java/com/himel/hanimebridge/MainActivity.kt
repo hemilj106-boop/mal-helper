@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebResourceError
@@ -36,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var sendButton: Button
     private var activeBaseUrl = "https://hanime1.me"
+    private var loginCompletedInWebView = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,7 +56,7 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "Login inside Hanime's real page. This app never asks for or sends your Hanime password to our server."
+            text = "Login inside Hanime's real page. This app never sends your Hanime password to our server."
             textSize = 13f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(12))
@@ -63,12 +65,16 @@ class MainActivity : Activity() {
         apiKeyInput = EditText(this).apply {
             hint = "Helper API key"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            transformationMethod = PasswordTransformationMethod.getInstance()
             isSingleLine = true
         }
-        root.addView(apiKeyInput, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ))
+        root.addView(
+            apiKeyInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
 
         val openButton = Button(this).apply { text = "Open Hanime Login" }
         root.addView(openButton)
@@ -91,11 +97,14 @@ class MainActivity : Activity() {
         root.addView(statusText)
 
         webView = WebView(this)
-        root.addView(webView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        root.addView(
+            webView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
 
         configureWebView()
 
@@ -152,8 +161,9 @@ class MainActivity : Activity() {
         }
         val url = LOGIN_URLS[index.coerceIn(0, LOGIN_URLS.lastIndex)]
         activeBaseUrl = url.substringBefore("/login")
+        loginCompletedInWebView = false
         sendButton.isEnabled = false
-        status("Loading Hanime login… Sign in on the website below.")
+        status("Loading Hanime login... Sign in on the website below.")
         webView.visibility = View.VISIBLE
         webView.loadUrl(url)
     }
@@ -164,19 +174,31 @@ class MainActivity : Activity() {
         if (host !in ALLOWED_HOSTS) return
 
         activeBaseUrl = "https://$host"
+        val onLoginPage = uri.path.orEmpty().contains("/login", ignoreCase = true)
+
+        if (onLoginPage) {
+            loginCompletedInWebView = false
+            sendButton.isEnabled = false
+            status("Hanime login page loaded. Sign in below. The session button will unlock after Hanime leaves the login page.")
+            return
+        }
+
         val cookies = CookieManager.getInstance().getCookie(activeBaseUrl)
             ?: CookieManager.getInstance().getCookie(url)
             ?: return
 
-        if (looksAuthenticated(cookies)) {
+        if (hasSessionCookie(cookies)) {
+            loginCompletedInWebView = true
             sendButton.isEnabled = true
-            status("Login session detected ✅  Tap “Send Logged-in Session to Helper”.")
-        } else if (!url.contains("/login", ignoreCase = true)) {
-            status("Page loaded, but I have not detected a login session yet. If you are logged in, open your profile/account page and wait a moment.")
+            status("Login redirect detected ✅ Tap 'Send Logged-in Session to Helper'.")
+        } else {
+            loginCompletedInWebView = false
+            sendButton.isEnabled = false
+            status("Hanime loaded, but no browser session is available yet. Finish signing in first.")
         }
     }
 
-    private fun looksAuthenticated(cookieHeader: String): Boolean {
+    private fun hasSessionCookie(cookieHeader: String): Boolean {
         return cookieHeader.split(';').any { part ->
             val name = part.substringBefore('=').trim().lowercase()
             name.contains("session") || name == "laravel_session"
@@ -190,15 +212,21 @@ class MainActivity : Activity() {
             return
         }
 
-        val cookies = CookieManager.getInstance().getCookie(activeBaseUrl)
-        if (cookies.isNullOrBlank() || !looksAuthenticated(cookies)) {
+        if (!loginCompletedInWebView) {
             sendButton.isEnabled = false
-            status("No logged-in Hanime session found yet. Finish signing in first.", true)
+            status("Finish signing in inside Hanime Bridge first.", true)
+            return
+        }
+
+        val cookies = CookieManager.getInstance().getCookie(activeBaseUrl)
+        if (cookies.isNullOrBlank() || !hasSessionCookie(cookies)) {
+            sendButton.isEnabled = false
+            status("No Hanime browser session was found. Finish signing in first.", true)
             return
         }
 
         sendButton.isEnabled = false
-        status("Sending the session securely to your private helper…")
+        status("Verifying and saving your Hanime session...")
 
         val userAgent = webView.settings.userAgentString ?: ""
         Thread {
@@ -232,16 +260,16 @@ class MainActivity : Activity() {
 
                 runOnUiThread {
                     if (code in 200..299) {
-                        status("Connected ✅ Your Hanime password never left Hanime. You can close this app.")
+                        status("Connected ✅ Hanime confirmed the logged-in session. You can close this app.")
                     } else {
-                        sendButton.isEnabled = true
-                        val shortMessage = responseText.take(220).ifBlank { "HTTP $code" }
-                        status("Helper rejected the session: $shortMessage", true)
+                        sendButton.isEnabled = loginCompletedInWebView
+                        val shortMessage = responseText.take(260).ifBlank { "HTTP $code" }
+                        status("Session not accepted: $shortMessage", true)
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    sendButton.isEnabled = true
+                    sendButton.isEnabled = loginCompletedInWebView
                     status("Could not reach the helper: ${e.javaClass.simpleName}. Try again.", true)
                 }
             }
