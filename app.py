@@ -103,13 +103,80 @@ class BridgeSessionIn(BaseModel):
     user_agent: Optional[str] = Field(default=None, max_length=1024)
 
 
-def _cookie_looks_authenticated(cookie_header: str) -> bool:
+def _cookie_has_session(cookie_header: str) -> bool:
     names = []
     for piece in cookie_header.split(";"):
         name = piece.partition("=")[0].strip().lower()
         if name:
             names.append(name)
     return any("session" in name for name in names) or "laravel_session" in names
+
+
+def _parse_cookie_header(cookie_header: str, host: str) -> tuple[httpx.Cookies, int]:
+    cookies = httpx.Cookies()
+    count = 0
+    for piece in cookie_header.split(";"):
+        name, sep, value = piece.strip().partition("=")
+        if not sep or not name:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_\-\.]+", name):
+            continue
+        cookies.set(name, value, domain=host, path="/")
+        count += 1
+    return cookies, count
+
+
+async def _verify_webview_session(
+    base_url: str,
+    cookies: httpx.Cookies,
+    user_agent: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    headers = h.web_headers(base_url + "/")
+    if user_agent:
+        headers["User-Agent"] = user_agent
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers=headers,
+            cookies=cookies,
+        ) as client:
+            response = await client.get(base_url + "/account?tab=profile")
+    except Exception as exc:
+        raise HTTPException(502, f"Could not verify the Hanime session ({type(exc).__name__}).")
+
+    final_url = str(response.url)
+    body = response.text
+    body_lower = body.lower()
+
+    if response.status_code >= 400:
+        raise HTTPException(401, f"Hanime did not accept the browser session (HTTP {response.status_code}).")
+
+    if "/login" in final_url.lower():
+        raise HTTPException(401, "You are not logged in inside Hanime Bridge yet. Finish signing in, then try again.")
+
+    # A generic Laravel session cookie exists even before authentication, so
+    # verify the account page itself before saving anything to Neon.
+    authenticated_hint = any(
+        hint in body_lower
+        for hint in ("profile details", "display name", "/logout", "account created", "channel views")
+    ) or "/account" in final_url.lower()
+
+    if not authenticated_hint:
+        raise HTTPException(401, "No authenticated Hanime account was detected. Finish signing in inside the Bridge first.")
+
+    user_id = h.extract_user_id(body)
+    user_name = None
+    name_match = re.search(
+        r'(?:display\s*name|name)[\s\S]{0,300}?value=["\']([^"\']{1,100})["\']',
+        body,
+        re.I,
+    )
+    if name_match:
+        user_name = h.clean_text(name_match.group(1)) or None
+
+    return user_id, user_name
 
 
 # The route functions in hanime_app resolve this global at request time, so
@@ -119,7 +186,7 @@ app = h.app
 
 
 @app.post("/bridge/session")
-def bridge_session(
+async def bridge_session(
     body: BridgeSessionIn,
     x_api_key: Optional[str] = Header(default=None),
 ):
@@ -131,34 +198,30 @@ def bridge_session(
         raise HTTPException(400, "Unsupported Hanime login host")
 
     cookie_header = body.cookie.strip()
-    if not _cookie_looks_authenticated(cookie_header):
-        raise HTTPException(400, "No Hanime login session cookie was found. Finish logging in first.")
+    if not _cookie_has_session(cookie_header):
+        raise HTTPException(400, "No Hanime session cookie was found. Open the Hanime login page first.")
 
-    cookies = httpx.Cookies()
-    count = 0
-    for piece in cookie_header.split(";"):
-        name, sep, value = piece.strip().partition("=")
-        if not sep or not name:
-            continue
-        if not re.fullmatch(r"[A-Za-z0-9_\-\.]+", name):
-            continue
-        cookies.set(name, value, domain=host, path="/")
-        count += 1
-
+    cookies, count = _parse_cookie_header(cookie_header, host)
     if count == 0:
         raise HTTPException(400, "Could not parse the Hanime session cookies")
 
+    base_url = f"https://{host}"
+    user_id, user_name = await _verify_webview_session(base_url, cookies, body.user_agent)
+
     h.save_session(
         cookies=cookies,
-        user_id=None,
-        user_name=None,
+        user_id=user_id,
+        user_name=user_name,
         auth_mode=f"webview-cookie:{host}",
     )
 
     return {
         "ok": True,
         "connected": True,
+        "verified": True,
         "host": host,
+        "user_id": user_id,
+        "user_name": user_name,
         "cookies_received": count,
         "password_received": False,
     }
