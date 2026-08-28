@@ -26,17 +26,17 @@ class MainActivity : Activity() {
     companion object {
         private const val BRIDGE_URL = "https://himel106j-hanime-sync.onrender.com/bridge/session"
         private val LOGIN_URLS = listOf(
-            "https://hanime1.me/login",
-            "https://hanimeone.me/login"
+            "https://hanime.tv/login",
+            "https://www.hanime.tv/login"
         )
-        private val ALLOWED_HOSTS = setOf("hanime1.me", "hanimeone.me")
+        private val ALLOWED_HOSTS = setOf("hanime.tv", "www.hanime.tv")
     }
 
     private lateinit var apiKeyInput: EditText
     private lateinit var statusText: TextView
     private lateinit var webView: WebView
     private lateinit var sendButton: Button
-    private var activeBaseUrl = "https://hanime1.me"
+    private var activeBaseUrl = "https://hanime.tv"
     private var loginCompletedInWebView = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,7 +56,7 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "Login inside Hanime's real page. This app never sends your Hanime password to our server."
+            text = "Login only on hanime.tv inside this app. Your Hanime password is never sent to our server."
             textSize = 13f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(6), 0, dp(12))
@@ -76,10 +76,10 @@ class MainActivity : Activity() {
             )
         )
 
-        val openButton = Button(this).apply { text = "Open Hanime Login" }
+        val openButton = Button(this).apply { text = "Open hanime.tv Login" }
         root.addView(openButton)
 
-        val alternateButton = Button(this).apply { text = "Try Alternate Hanime Login" }
+        val alternateButton = Button(this).apply { text = "Try www.hanime.tv Login" }
         root.addView(alternateButton)
 
         sendButton = Button(this).apply {
@@ -89,7 +89,7 @@ class MainActivity : Activity() {
         root.addView(sendButton)
 
         statusText = TextView(this).apply {
-            text = "1) Enter Helper API key.  2) Open login.  3) Sign in normally."
+            text = "1) Enter Helper API key.  2) Open hanime.tv.  3) Sign in normally."
             textSize = 13f
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(8), 0, dp(8))
@@ -148,7 +148,7 @@ class MainActivity : Activity() {
             ) {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
-                    status("Page error: ${error?.description ?: "unknown"}. Try the alternate login button.", true)
+                    status("Page error: ${error?.description ?: "unknown"}. Try the www.hanime.tv button.", true)
                 }
             }
         }
@@ -163,7 +163,7 @@ class MainActivity : Activity() {
         activeBaseUrl = url.substringBefore("/login")
         loginCompletedInWebView = false
         sendButton.isEnabled = false
-        status("Loading Hanime login... Sign in on the website below.")
+        status("Loading hanime.tv login... Sign in on the website below.")
         webView.visibility = View.VISIBLE
         webView.loadUrl(url)
     }
@@ -171,7 +171,12 @@ class MainActivity : Activity() {
     private fun inspectSession(url: String) {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
         val host = uri.host?.lowercase() ?: return
-        if (host !in ALLOWED_HOSTS) return
+        if (host !in ALLOWED_HOSTS) {
+            loginCompletedInWebView = false
+            sendButton.isEnabled = false
+            status("Blocked unexpected login domain: $host", true)
+            return
+        }
 
         activeBaseUrl = "https://$host"
         val onLoginPage = uri.path.orEmpty().contains("/login", ignoreCase = true)
@@ -179,7 +184,7 @@ class MainActivity : Activity() {
         if (onLoginPage) {
             loginCompletedInWebView = false
             sendButton.isEnabled = false
-            status("Hanime login page loaded. Sign in below. The session button will unlock after Hanime leaves the login page.")
+            status("hanime.tv login page loaded. Sign in below. The session button will unlock after Hanime leaves the login page.")
             return
         }
 
@@ -194,7 +199,7 @@ class MainActivity : Activity() {
         } else {
             loginCompletedInWebView = false
             sendButton.isEnabled = false
-            status("Hanime loaded, but no browser session is available yet. Finish signing in first.")
+            status("hanime.tv loaded, but no browser session is available yet. Finish signing in first.")
         }
     }
 
@@ -260,7 +265,7 @@ class MainActivity : Activity() {
 
                 runOnUiThread {
                     if (code in 200..299) {
-                        status("Connected ✅ Hanime confirmed the logged-in session. You can close this app.")
+                        status("Connected ✅ hanime.tv confirmed the logged-in session. You can close this app.")
                     } else {
                         sendButton.isEnabled = loginCompletedInWebView
                         val shortMessage = responseText.take(260).ifBlank { "HTTP $code" }
