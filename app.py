@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 import hanime_app as h
 
 
-SUPPORTED_LOGIN_HOSTS = {"hanime1.me", "hanimeone.me"}
+# Only accept sessions from the actual hanime.tv site.
+SUPPORTED_LOGIN_HOSTS = {"hanime.tv", "www.hanime.tv"}
 
 
 def _hashed_headers(version: str = "app2") -> dict:
@@ -98,7 +99,7 @@ async def robust_rapi_login(email: str, password: str) -> dict:
 
 
 class BridgeSessionIn(BaseModel):
-    base_url: str = Field(description="Hanime login origin, for example https://hanime1.me")
+    base_url: str = Field(description="Hanime login origin, for example https://hanime.tv")
     cookie: str = Field(min_length=1, max_length=16384)
     user_agent: Optional[str] = Field(default=None, max_length=1024)
 
@@ -156,8 +157,6 @@ async def _verify_webview_session(
     if "/login" in final_url.lower():
         raise HTTPException(401, "You are not logged in inside Hanime Bridge yet. Finish signing in, then try again.")
 
-    # A generic Laravel session cookie exists even before authentication, so
-    # verify the account page itself before saving anything to Neon.
     authenticated_hint = any(
         hint in body_lower
         for hint in ("profile details", "display name", "/logout", "account created", "channel views")
@@ -179,8 +178,6 @@ async def _verify_webview_session(
     return user_id, user_name
 
 
-# The route functions in hanime_app resolve this global at request time, so
-# replacing it here upgrades /connect without duplicating any existing routes.
 h.rapi_login = robust_rapi_login
 app = h.app
 
