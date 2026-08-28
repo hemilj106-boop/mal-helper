@@ -1,11 +1,18 @@
 import hashlib
+import re
 import secrets
 import time
+from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
+from pydantic import BaseModel, Field
 
 import hanime_app as h
+
+
+SUPPORTED_LOGIN_HOSTS = {"hanime1.me", "hanimeone.me"}
 
 
 def _hashed_headers(version: str = "app2") -> dict:
@@ -80,7 +87,7 @@ async def robust_rapi_login(email: str, password: str) -> dict:
         raise HTTPException(
             401,
             "Hanime's login API was reachable, but it did not accept the account credentials. "
-            "Make sure you are using the email address and password that work on Hanime.tv (not the profile/display name).",
+            "Use the Android WebView bridge instead of entering your Hanime password on Render.",
         )
 
     raise HTTPException(
@@ -90,7 +97,68 @@ async def robust_rapi_login(email: str, password: str) -> dict:
     )
 
 
+class BridgeSessionIn(BaseModel):
+    base_url: str = Field(description="Hanime login origin, for example https://hanime1.me")
+    cookie: str = Field(min_length=1, max_length=16384)
+    user_agent: Optional[str] = Field(default=None, max_length=1024)
+
+
+def _cookie_looks_authenticated(cookie_header: str) -> bool:
+    names = []
+    for piece in cookie_header.split(";"):
+        name = piece.partition("=")[0].strip().lower()
+        if name:
+            names.append(name)
+    return any("session" in name for name in names) or "laravel_session" in names
+
+
 # The route functions in hanime_app resolve this global at request time, so
-# replacing it here upgrades /connect without duplicating any routes.
+# replacing it here upgrades /connect without duplicating any existing routes.
 h.rapi_login = robust_rapi_login
 app = h.app
+
+
+@app.post("/bridge/session")
+def bridge_session(
+    body: BridgeSessionIn,
+    x_api_key: Optional[str] = Header(default=None),
+):
+    h.check_api_key(x_api_key)
+
+    parsed = urlparse(body.base_url.strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or host not in SUPPORTED_LOGIN_HOSTS:
+        raise HTTPException(400, "Unsupported Hanime login host")
+
+    cookie_header = body.cookie.strip()
+    if not _cookie_looks_authenticated(cookie_header):
+        raise HTTPException(400, "No Hanime login session cookie was found. Finish logging in first.")
+
+    cookies = httpx.Cookies()
+    count = 0
+    for piece in cookie_header.split(";"):
+        name, sep, value = piece.strip().partition("=")
+        if not sep or not name:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_\-\.]+", name):
+            continue
+        cookies.set(name, value, domain=host, path="/")
+        count += 1
+
+    if count == 0:
+        raise HTTPException(400, "Could not parse the Hanime session cookies")
+
+    h.save_session(
+        cookies=cookies,
+        user_id=None,
+        user_name=None,
+        auth_mode=f"webview-cookie:{host}",
+    )
+
+    return {
+        "ok": True,
+        "connected": True,
+        "host": host,
+        "cookies_received": count,
+        "password_received": False,
+    }
