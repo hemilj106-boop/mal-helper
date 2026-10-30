@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import psycopg
+from cryptography.fernet import Fernet, InvalidToken
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -18,6 +19,7 @@ from psycopg.rows import dict_row
 APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
 HELPER_API_KEY = os.getenv("HELPER_API_KEY", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+HANIME_SESSION_ENCRYPTION_KEY = os.getenv("HANIME_SESSION_ENCRYPTION_KEY", "").strip()
 HANIME_BASE_URL = os.getenv("HANIME_BASE_URL", "https://hanime.tv").strip().rstrip("/")
 HANIME_SEARCH_URL = os.getenv("HANIME_SEARCH_URL", "https://search.htv-services.com/").strip()
 HANIME_RAPI_BASE = os.getenv("HANIME_RAPI_BASE", "https://www.universal-cdn.com").strip().rstrip("/")
@@ -101,6 +103,35 @@ def rapi_headers() -> dict:
     }
 
 
+def _fernet() -> Fernet:
+    if not HANIME_SESSION_ENCRYPTION_KEY:
+        raise RuntimeError("HANIME_SESSION_ENCRYPTION_KEY is not configured")
+    try:
+        return Fernet(HANIME_SESSION_ENCRYPTION_KEY.encode())
+    except Exception as exc:
+        raise RuntimeError("HANIME_SESSION_ENCRYPTION_KEY is invalid") from exc
+
+
+def _encrypt_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if value.startswith("fernet:"):
+        return value
+    encrypted = _fernet().encrypt(value.encode()).decode()
+    return "fernet:" + encrypted
+
+
+def _decrypt_secret(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not value.startswith("fernet:"):
+        return value  # Legacy row; load_session migrates it to encrypted storage.
+    try:
+        return _fernet().decrypt(value[len("fernet:"):].encode()).decode()
+    except InvalidToken as exc:
+        raise RuntimeError("Stored Hanime session could not be decrypted; check the encryption key") from exc
+
+
 def save_session(
     *,
     cookies: Optional[httpx.Cookies] = None,
@@ -139,14 +170,28 @@ def save_session(
                 auth_mode=excluded.auth_mode,
                 updated_at=excluded.updated_at
             """,
-            (json.dumps(saved), session_token, user_id, user_name, auth_mode, int(time.time())),
+            (_encrypt_secret(json.dumps(saved)), _encrypt_secret(session_token), user_id, user_name, auth_mode, int(time.time())),
         )
         conn.commit()
 
 
 def load_session() -> Optional[dict]:
     with db() as conn:
-        return conn.execute("SELECT * FROM hanime_session WHERE id = 1").fetchone()
+        row = conn.execute("SELECT * FROM hanime_session WHERE id = 1").fetchone()
+        if not row:
+            return None
+        raw_cookies = row.get("cookies_json")
+        raw_token = row.get("session_token")
+        # Migrate any prototype plaintext session fields as soon as they are read.
+        if (raw_cookies and not raw_cookies.startswith("fernet:")) or (raw_token and not raw_token.startswith("fernet:")):
+            conn.execute(
+                "UPDATE hanime_session SET cookies_json = %s, session_token = %s WHERE id = 1",
+                (_encrypt_secret(raw_cookies), _encrypt_secret(raw_token)),
+            )
+            conn.commit()
+        row["cookies_json"] = _decrypt_secret(raw_cookies)
+        row["session_token"] = _decrypt_secret(raw_token)
+        return row
 
 
 def clear_session():
@@ -366,7 +411,7 @@ def privacy():
     <html><body style="font-family:sans-serif;max-width:720px;margin:40px auto;line-height:1.5">
     <h1>Hanime Helper Privacy Policy</h1>
     <p>This is a private personal helper. Credentials entered on the connection page are used only for the sign-in request and are not stored.</p>
-    <p>Only the resulting Hanime session token/cookies and basic account identifier are stored in the owner's private Neon database.</p>
+    <p>Only the resulting Hanime session token/cookies and basic account identifier are stored in the owner's private Neon database. Session tokens and cookies are encrypted at rest with a Fernet key held in the hosting provider's secret settings.</p>
     <p>Do not publish the helper API key, database URL, or stored session credentials.</p>
     </body></html>
     """
