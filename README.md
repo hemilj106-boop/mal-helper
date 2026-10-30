@@ -1,78 +1,56 @@
-# MAL Helper
+# Hanime Helper
 
-A tiny personal API that lets a Custom GPT manage your MyAnimeList account.
+A private helper API for searching Hanime.tv and reading the owner's authenticated account pages. This branch is deployed separately from the original MAL Helper.
 
-## What it can do
+## Current capabilities
 
-- Search anime by title
-- Read anime details
-- Add anime to your MAL list
-- Change status: Watching / Completed / On Hold / Dropped / Plan to Watch
-- Update watched episode count
-- Set a score
-- Remove anime from your list
-- Read your MAL list
+- Search Hanime videos
+- Retrieve video and franchise details
+- Connect one Hanime.tv account
+- Check connection status
+- Probe authenticated account pages
+- Read favorites, watch history, and playlists when those pages are available to the signed-in account
+- Disconnect and delete the stored session
 
-## Important security rules
+Account-page scraping is unofficial and may stop working if Hanime changes its website. The favorites, history, and playlist routes must be verified against the owner's signed-in account before relying on them.
 
-Never put these values in GitHub:
-- MAL client secret
-- HELPER_API_KEY
-- MAL access/refresh tokens
+## Security
 
-Keep them only in your hosting provider's environment/secrets settings.
+- The Hanime password is submitted to the helper only during the sign-in request and is not stored.
+- Session cookies and API session tokens are encrypted at rest with Fernet.
+- The encryption key is held only in Render environment variables.
+- Never commit the helper API key, database URL, encryption key, passwords, or session cookies to GitHub.
+- Never paste passwords or session cookies into ChatGPT.
 
-## Files
+## Render environment variables
 
-- `app.py` - FastAPI helper server
-- `requirements.txt` - Python packages
-- `.env.example` - environment variable names only
-- `openapi.yaml` - schema to paste into your Custom GPT Action
-- `.gitignore` - keeps local secrets out of GitHub
+Set these in the `himel106j-hanime-sync` Render service:
 
-## Environment variables
+- `APP_BASE_URL` — the deployed service URL
+- `HELPER_API_KEY` — a long random secret used by the ChatGPT Action
+- `DATABASE_URL` — the private Neon Postgres connection string
+- `HANIME_SESSION_ENCRYPTION_KEY` — a Fernet key stored only in Render secrets
+- `HANIME_BASE_URL` — optional; defaults to `https://hanime.tv`
+- `HANIME_SEARCH_URL` — optional; defaults to Hanime's search service
+- `HANIME_RAPI_BASE` — optional; defaults to the current CDN API host
 
-Set these on your hosting provider:
+## Connect the account
 
-- `MAL_CLIENT_ID`
-- `MAL_CLIENT_SECRET`
-- `APP_BASE_URL`
-- `HELPER_API_KEY`
-- `TOKEN_DB_PATH` (optional; point this to persistent storage)
+After the service is deployed, open the service's `/connect` page in a browser. Enter the helper API key and Hanime credentials directly on that HTTPS page. Do not send credentials in ChatGPT. The service tries the website login and supported Hanime session API methods, then stores only the resulting encrypted session.
 
-## MAL redirect URL
+## Verify the account pages
 
-After deployment, your MAL API app's redirect URL must be:
+After connecting, use the ChatGPT Action's `/me/status` and `/me/probe` operations. The probe reports whether Hanime's authenticated account pages such as favorites, history, and playlists are accessible. Only use the individual list endpoints after the probe confirms the relevant pages.
 
-`https://YOUR-DEPLOYED-DOMAIN/auth/callback`
+## ChatGPT Action
 
-Replace the placeholder with your real helper domain.
+Import `openapi.yaml` into an Action and configure API Key authentication:
 
-## First authorization
+- Header name: `X-API-Key`
+- API key value: the same `HELPER_API_KEY` stored in Render
+- Privacy policy: `https://himel106j-hanime-sync.onrender.com/privacy`
 
-After deployment and environment variables are set, open:
+## Health check
 
-`https://YOUR-DEPLOYED-DOMAIN/auth/start`
+`https://himel106j-hanime-sync.onrender.com/health`
 
-Approve access on MyAnimeList. When you see `Connected ✅`, the helper has stored your token.
-
-## Custom GPT Action
-
-1. Open your GPT editor.
-2. Create a new Action.
-3. Authentication: API Key.
-4. Put your `HELPER_API_KEY` in the action's API key setting.
-5. Set the header name to `X-API-Key`.
-6. Open `openapi.yaml`.
-7. Replace `https://YOUR-DEPLOYED-DOMAIN.example.com` with your real helper URL.
-8. Paste the schema into the Action editor.
-9. Privacy policy URL: `https://YOUR-DEPLOYED-DOMAIN/privacy`.
-
-## Local test
-
-```bash
-pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-For local testing, set `APP_BASE_URL=http://localhost:8000`.
