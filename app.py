@@ -42,21 +42,22 @@ def _web2_headers() -> dict:
 
 
 async def robust_rapi_login(email: str, password: str) -> dict:
-    # Hanime's current app API uses /rapi/v7/sessions and an
-    # {email, password} payload. The older v4 / {burger, fries} flow
-    # is retired and should not be used.
-    url = f"{h.HANIME_RAPI_BASE}/rapi/v7/sessions"
+    # The maintained Hanime client currently documents APP login at
+    # /rapi/v4/sessions with the burger/fries request fields. The v7
+    # routes documented by that client are for website channel data,
+    # not evidence of a v7 login endpoint.
+    url = f"{h.HANIME_RAPI_BASE}/rapi/v4/sessions"
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.post(
                 url,
-                json={"email": email, "password": password},
+                json={"burger": email, "fries": password},
                 headers=_hashed_headers("app2"),
             )
     except Exception as exc:
         raise HTTPException(
             502,
-            f"Could not reach Hanime's current login API ({type(exc).__name__}).",
+            f"Could not reach Hanime's app login API ({type(exc).__name__}).",
         )
 
     try:
@@ -64,17 +65,26 @@ async def robust_rapi_login(email: str, password: str) -> dict:
     except Exception:
         payload = {}
 
-    token = payload.get("session_token") if isinstance(payload, dict) else None
+    token = None
+    if isinstance(payload, dict):
+        token = payload.get("sessionToken") or payload.get("session_token")
     if response.status_code >= 400 or not token:
         if response.status_code in (400, 401):
             raise HTTPException(
                 401,
-                "Hanime rejected the login request. Check the account credentials and try again.",
+                "Hanime rejected the login request (HTTP "
+                f"{response.status_code}). Check the account credentials.",
             )
+        server = response.headers.get("server", "unknown")
+        cf_ray = response.headers.get("cf-ray", "not-present")
+        content_type = response.headers.get("content-type", "unknown")
         raise HTTPException(
             502,
-            f"Hanime's current login API did not return a session (HTTP {response.status_code}). "
-            "The hosting network may be blocked, or Hanime may have changed its API.",
+            "Hanime app login did not return a session "
+            f"(HTTP {response.status_code}; server={server}; "
+            f"cf-ray={cf_ray}; content-type={content_type}). "
+            "These diagnostics help distinguish an upstream access block "
+            "from an API or credential error.",
         )
 
     user = payload.get("user") or {}
@@ -84,9 +94,9 @@ async def robust_rapi_login(email: str, password: str) -> dict:
         session_token=token,
         user_id=user_id,
         user_name=user_name,
-        auth_mode="rapi-v7-app2",
+        auth_mode="rapi-v4-app2",
     )
-    return {"user_id": user_id, "user_name": user_name, "auth_mode": "rapi-v7-app2"}
+    return {"user_id": user_id, "user_name": user_name, "auth_mode": "rapi-v4-app2"}
 
 
 class BridgeSessionIn(BaseModel):
