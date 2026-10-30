@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        final String userAgent = webView.getSettings().getUserAgentString();
         syncButton.setEnabled(false);
         status.setText("Verifying your signed-in session securely…");
 
@@ -125,7 +126,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject();
                 body.put("base_url", HANIME_ORIGIN);
                 body.put("cookie", cookie);
-                body.put("user_agent", webView.getSettings().getUserAgentString());
+                body.put("user_agent", userAgent);
 
                 byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
                 try (OutputStream out = connection.getOutputStream()) {
