@@ -42,60 +42,51 @@ def _web2_headers() -> dict:
 
 
 async def robust_rapi_login(email: str, password: str) -> dict:
-    attempts = [
-        (f"{h.HANIME_BASE_URL}/rapi/v4/sessions", _web2_headers(), "hanime-web2"),
-        (f"{h.HANIME_RAPI_BASE}/rapi/v4/sessions", _hashed_headers("app2"), "cdn-app2"),
-        (f"{h.HANIME_RAPI_BASE}/rapi/v4/sessions", _hashed_headers("web2"), "cdn-web2"),
-    ]
-
-    statuses = []
-    unauthorized = False
-    for url, headers, mode in attempts:
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                response = await client.post(
-                    url,
-                    json={"burger": email, "fries": password},
-                    headers=headers,
-                )
-            statuses.append(f"{mode}:{response.status_code}")
-            try:
-                payload = response.json()
-            except Exception:
-                payload = {}
-
-            token = payload.get("session_token") if isinstance(payload, dict) else None
-            if token:
-                user = payload.get("user") or {}
-                user_id = str(user.get("id")) if user.get("id") is not None else None
-                user_name = user.get("name") or user.get("username")
-                h.save_session(
-                    session_token=token,
-                    user_id=user_id,
-                    user_name=user_name,
-                    auth_mode=mode,
-                )
-                return {"user_id": user_id, "user_name": user_name, "auth_mode": mode}
-
-            if response.status_code in (400, 401):
-                unauthorized = True
-            if isinstance(payload, dict) and "Unauthorized" in str(payload.get("errors", "")):
-                unauthorized = True
-        except Exception as exc:
-            statuses.append(f"{mode}:error-{type(exc).__name__}")
-
-    if unauthorized:
+    # Hanime's current app API uses /rapi/v7/sessions and an
+    # {email, password} payload. The older v4 / {burger, fries} flow
+    # is retired and should not be used.
+    url = f"{h.HANIME_RAPI_BASE}/rapi/v7/sessions"
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.post(
+                url,
+                json={"email": email, "password": password},
+                headers=_hashed_headers("app2"),
+            )
+    except Exception as exc:
         raise HTTPException(
-            401,
-            "Hanime's login API was reachable, but it did not accept the account credentials. "
-            "Use the Android WebView bridge instead of entering your Hanime password on Render.",
+            502,
+            f"Could not reach Hanime's current login API ({type(exc).__name__}).",
         )
 
-    raise HTTPException(
-        502,
-        "Hanime blocked or rejected all cloud login methods. "
-        f"Attempt results: {', '.join(statuses)}",
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+
+    token = payload.get("session_token") if isinstance(payload, dict) else None
+    if response.status_code >= 400 or not token:
+        if response.status_code in (400, 401):
+            raise HTTPException(
+                401,
+                "Hanime rejected the login request. Check the account credentials and try again.",
+            )
+        raise HTTPException(
+            502,
+            f"Hanime's current login API did not return a session (HTTP {response.status_code}). "
+            "The hosting network may be blocked, or Hanime may have changed its API.",
+        )
+
+    user = payload.get("user") or {}
+    user_id = str(user.get("id")) if user.get("id") is not None else None
+    user_name = user.get("name") or user.get("username")
+    h.save_session(
+        session_token=token,
+        user_id=user_id,
+        user_name=user_name,
+        auth_mode="rapi-v7-app2",
     )
+    return {"user_id": user_id, "user_name": user_name, "auth_mode": "rapi-v7-app2"}
 
 
 class BridgeSessionIn(BaseModel):
